@@ -174,6 +174,23 @@ class VOIDTensor:
         """Convert to FP32."""
         return self.to_dtype(torch.float32)
 
+    def to_fp8(
+        self,
+        format: str = "e4m3",
+        scale_mode: str = "per_block",
+    ) -> 'FP8VOIDTensor':
+        """Convert to FP8 format for reduced memory and faster compute.
+
+        Args:
+            format: FP8 format - "e4m3" (higher precision) or "e5m2" (higher range)
+            scale_mode: "per_tensor" or "per_block"
+
+        Returns:
+            FP8VOIDTensor with quantized values
+        """
+        from .fp8 import void_tensor_to_fp8
+        return void_tensor_to_fp8(self, format=format, scale_mode=scale_mode)
+
     def to_dense(self) -> torch.Tensor:
         """Convert back to dense matrix (for validation)."""
         tile_m, tile_n = self.tile_size
@@ -196,7 +213,16 @@ class VOIDTensor:
         Returns:
             row_ptr: CSR-style row pointer for blocks, shape [n_block_rows + 1]
             block_indices: Index into values for each row's blocks
+
+        Note: Results are cached after first computation.
         """
+        # Check cache first
+        if hasattr(self, '_row_ptr_cache') and hasattr(self, '_block_indices_cache'):
+            cache_device = self._row_ptr_cache.device
+            target_device = self.block_rows.device
+            if cache_device == target_device:
+                return self._row_ptr_cache, self._block_indices_cache
+
         n_block_rows = self.block_grid[0]
 
         # Count blocks per row
@@ -211,6 +237,10 @@ class VOIDTensor:
         # Sort by (block_row, block_col)
         sort_keys = self.block_rows.long() * self.block_grid[1] + self.block_cols.long()
         block_indices = torch.argsort(sort_keys).to(torch.int32)
+
+        # Cache results
+        self._row_ptr_cache = row_ptr
+        self._block_indices_cache = block_indices
 
         return row_ptr, block_indices
 

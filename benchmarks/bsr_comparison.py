@@ -39,6 +39,22 @@ class BSRBenchmarkResult:
     void_overhead: float
 
 
+def create_block_sparse_matrix(M, K, block_sparsity, block_size=32):
+    """Create a matrix with actual block sparsity (not element sparsity)."""
+    n_block_rows = M // block_size
+    n_block_cols = K // block_size
+    data = np.zeros((M, K), dtype=np.float32)
+
+    for br in range(n_block_rows):
+        for bc in range(n_block_cols):
+            if np.random.random() > block_sparsity:
+                r_start, r_end = br * block_size, (br + 1) * block_size
+                c_start, c_end = bc * block_size, (bc + 1) * block_size
+                data[r_start:r_end, c_start:c_end] = np.random.randn(block_size, block_size) * 0.1
+
+    return sp.csr_matrix(data)
+
+
 def benchmark_bsr_vs_void(
     M: int,
     K: int,
@@ -52,12 +68,12 @@ def benchmark_bsr_vs_void(
     Compare VOID against cuSPARSE BSR format.
 
     This is the key benchmark to prove VOID's value.
+    Uses BLOCK sparsity (not element sparsity) for fair comparison.
     """
     device = torch.device("cuda")
 
-    # Create random sparse matrix
-    density = 1.0 - sparsity
-    sparse_csr = sp.random(M, K, density=density, format='csr', dtype=np.float32)
+    # Create block-sparse matrix (this is what VOID is designed for)
+    sparse_csr = create_block_sparse_matrix(M, K, sparsity, block_size)
 
     # Convert to BSR format (this is VOID's competitor)
     try:

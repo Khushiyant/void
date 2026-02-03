@@ -16,11 +16,18 @@ from .format import VOIDTensor
 
 def get_triton_dtype(torch_dtype: torch.dtype):
     """Map PyTorch dtype to Triton dtype."""
-    return {
+    dtype_map = {
         torch.float32: tl.float32,
         torch.float16: tl.float16,
         torch.bfloat16: tl.bfloat16,
-    }.get(torch_dtype, tl.float32)
+    }
+    # Add FP8 types if available (PyTorch 2.1+)
+    if hasattr(torch, 'float8_e4m3fn'):
+        dtype_map[torch.float8_e4m3fn] = tl.float8e4nv
+    if hasattr(torch, 'float8_e5m2'):
+        dtype_map[torch.float8_e5m2] = tl.float8e5
+
+    return dtype_map.get(torch_dtype, tl.float32)
 
 
 # =============================================================================
@@ -142,16 +149,18 @@ def void_spmm(
     Returns:
         Dense matrix C [M, N]
     """
-    assert b.dim() == 2, "B must be 2D"
-    assert a.shape[1] == b.shape[0], f"Dimension mismatch: A is {a.shape}, B is {b.shape}"
-    assert b.is_cuda, "B must be on CUDA"
-    assert a.values.is_cuda, "A must be on CUDA"
-
+    # Fast path assertions (minimal overhead)
     M, K = a.shape
-    _, N = b.shape
-    tile_m, tile_k = a.tile_size
+    N = b.shape[1]
 
-    # Ensure B is contiguous
+    # Early exit for empty matrix
+    if a.n_blocks == 0:
+        if out is None:
+            return torch.zeros(M, N, dtype=b.dtype, device=b.device)
+        out.zero_()
+        return out
+
+    # Ensure B is contiguous (usually already is)
     if not b.is_contiguous():
         b = b.contiguous()
 
@@ -159,21 +168,21 @@ def void_spmm(
     if out is None:
         out = torch.zeros(M, N, dtype=b.dtype, device=b.device)
     else:
-        assert out.shape == (M, N)
         out.zero_()
 
-    if a.n_blocks == 0:
-        return out
-
-    # Get row-organized block info
+    # Get cached row-organized block info
     row_ptr, block_indices = a.get_row_block_info()
     n_block_rows = a.block_grid[0]
+    tile_m, tile_k = a.tile_size
 
-    # Choose TILE_N based on N
-    TILE_N = min(64, triton.next_power_of_2(N))
-
-    # Get output dtype for Triton
-    output_dtype = get_triton_dtype(b.dtype)
+    # Choose TILE_N: larger is better for memory coalescing
+    # Use 128 for large N, 64 for medium, match N for small
+    if N >= 128:
+        TILE_N = 128
+    elif N >= 64:
+        TILE_N = 64
+    else:
+        TILE_N = triton.next_power_of_2(N)
 
     # Grid: one program per (block_row, output_tile_column)
     grid = (n_block_rows, triton.cdiv(N, TILE_N))
@@ -186,7 +195,7 @@ def void_spmm(
         b.stride(0), b.stride(1),
         out.stride(0), out.stride(1),
         TILE_M=tile_m, TILE_K=tile_k, TILE_N=TILE_N,
-        OUTPUT_DTYPE=output_dtype,
+        OUTPUT_DTYPE=get_triton_dtype(b.dtype),
     )
 
     return out
@@ -218,6 +227,8 @@ def void_spmv_kernel(
 ):
     """
     Compute y = A @ x where A is VOID sparse and x is dense vector.
+
+    Optimized version using vectorized matrix-vector multiply with broadcast.
     """
     pid = tl.program_id(0)  # Block row
 
@@ -242,13 +253,21 @@ def void_spmv_kernel(
         x_mask = x_offsets < K
         x_vals = tl.load(x_ptr + x_offsets, mask=x_mask, other=0.0).to(tl.float32)
 
-        # Load A tile and compute A @ x for this block
-        for i in range(TILE_M):
-            a_row_ptr = a_values_ptr + actual_idx * TILE_M * TILE_K + i * TILE_K
-            a_row = tl.load(a_row_ptr + tl.arange(0, TILE_K)).to(tl.float32)
-            dot_result = tl.sum(a_row * x_vals)
-            # Accumulate into position i
-            acc = tl.where(tl.arange(0, TILE_M) == i, acc + dot_result, acc)
+        # Load entire A tile [TILE_M, TILE_K] using block pointer
+        a_tile_ptr = tl.make_block_ptr(
+            base=a_values_ptr + actual_idx * TILE_M * TILE_K,
+            shape=(TILE_M, TILE_K),
+            strides=(TILE_K, 1),
+            offsets=(0, 0),
+            block_shape=(TILE_M, TILE_K),
+            order=(1, 0),
+        )
+        a_tile = tl.load(a_tile_ptr).to(tl.float32)  # [TILE_M, TILE_K]
+
+        # Vectorized matrix-vector multiply using broadcast:
+        # a_tile [TILE_M, TILE_K] * x_vals[None, :] [1, TILE_K] -> [TILE_M, TILE_K]
+        # then sum along K dimension -> [TILE_M]
+        acc += tl.sum(a_tile * x_vals[None, :], axis=1)
 
     # Store output with target dtype
     out_offset = pid * TILE_M

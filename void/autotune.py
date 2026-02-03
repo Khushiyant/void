@@ -364,6 +364,9 @@ def generate_spmm_configs(N: int, tile_m: int, tile_k: int) -> List[KernelConfig
     Generate candidate configurations for SpMM based on problem size.
 
     Returns list of configs sorted by likelihood of being good.
+
+    2025 Update: Expanded num_stages to [2,3,4,5] for better memory hiding
+    on modern GPUs with larger register files.
     """
     configs = []
 
@@ -376,8 +379,9 @@ def generate_spmm_configs(N: int, tile_m: int, tile_k: int) -> List[KernelConfig
     # Warp counts (4 or 8 is usually best)
     warp_candidates = [4, 8]
 
-    # Pipeline stages
-    stage_candidates = [2, 3, 4]
+    # Pipeline stages - expanded for 2025 SOTA
+    # More stages = better memory latency hiding on modern GPUs
+    stage_candidates = [2, 3, 4, 5]
 
     # Generate all combinations
     for tile_n in tile_n_candidates:
@@ -390,6 +394,32 @@ def generate_spmm_configs(N: int, tile_m: int, tile_k: int) -> List[KernelConfig
                     num_warps=num_warps,
                     num_stages=num_stages
                 ))
+
+    return configs
+
+
+def generate_attention_configs(head_dim: int, block_size: int) -> List[dict]:
+    """
+    Generate candidate configurations for sparse attention.
+
+    Returns list of config dicts for attention kernel tuning.
+    """
+    configs = []
+
+    # Warp counts
+    warp_candidates = [4, 8]
+
+    # Pipeline stages - expanded for 2025 SOTA
+    stage_candidates = [2, 3, 4, 5]
+
+    for num_warps in warp_candidates:
+        for num_stages in stage_candidates:
+            configs.append({
+                "num_warps": num_warps,
+                "num_stages": num_stages,
+                "head_dim": head_dim,
+                "block_size": block_size,
+            })
 
     return configs
 

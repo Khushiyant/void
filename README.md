@@ -17,6 +17,7 @@ VOID is a high-performance sparse matrix library that combines FlashAttention-st
 
 ## Features
 
+### Core Operations
 - **SpMM/SpMV Operations** - Sparse-dense matrix multiplication with autotuning
 - **Sparse Attention** - FlashAttention-style block-sparse attention patterns
 - **Autograd Support** - Full backward pass with fused Triton kernels
@@ -150,18 +151,82 @@ out = local_attention(q, k, v, window_size=128, causal=False)
 out = block_sparse_attention(q, k, v, sparsity=0.9)
 ```
 
+### Fused Operations
+
+```python
+from void import void_spmm_gelu, void_spmm_relu, fused_sparse_mlp, FusedSparseLinear
+
+# Fused SpMM + activation (single kernel)
+C = void_spmm_gelu(void_tensor, B)  # C = GELU(A @ B)
+C = void_spmm_relu(void_tensor, B, bias=bias)  # C = ReLU(A @ B + bias)
+
+# Fused sparse MLP
+y = fused_sparse_mlp(x, W1, W2, activation="gelu", bias1=b1, bias2=b2)
+
+# Drop-in replacement for nn.Linear with fused activation
+layer = FusedSparseLinear(in_features=512, out_features=256,
+                          void_tensor=void_tensor, activation="gelu")
+```
+
+### FP8 Quantization
+
+```python
+from void import void_tensor_to_fp8, void_spmm_fp8, FP8Config
+
+# Convert to FP8 (E4M3 format)
+fp8_tensor = void_tensor_to_fp8(void_tensor, format="e4m3")
+
+# FP8 SpMM with automatic scaling
+C = void_spmm_fp8(fp8_tensor, B, output_dtype=torch.float16)
+```
+
+### Dynamic Dispatch
+
+```python
+from void import void_spmm_auto, get_recommended_kernel
+
+# Automatic kernel selection based on sparsity pattern
+C = void_spmm_auto(void_tensor, B, activation="gelu")
+
+# Get recommendation without executing
+variant, reason = get_recommended_kernel(void_tensor, B.shape)
+print(f"Recommended: {variant}, Reason: {reason}")
+```
+
 ## Benchmarks
 
-Performance comparison on NVIDIA A100 (80GB):
+### SpMM Performance (RTX 5070 Ti, 4096x4096 matrix, N=512)
 
-| Operation | Matrix Size | Sparsity | cuSPARSE | VOID | Speedup |
-|-----------|-------------|----------|----------|------|---------|
-| SpMM      | 4096x4096   | 90%      | 1.2ms    | 0.4ms| 3.0x    |
-| SpMM      | 8192x8192   | 95%      | 2.8ms    | 0.7ms| 4.0x    |
-| SpMV      | 4096x4096   | 90%      | 0.3ms    | 0.1ms| 3.0x    |
-| Attention | 4096 seq    | 87.5%    | N/A      | 1.1ms| -       |
+**VOID vs cuSPARSE BSR (Block Sparse Row)** - the fair comparison since both use blocks:
 
-*Benchmarks run with FP16, batch size 1, averaged over 100 iterations*
+| Block Sparsity | VOID | BSR | CSR | vs BSR | vs CSR |
+|----------------|------|-----|-----|--------|--------|
+| 70% | 0.28ms | 0.91ms | 4.57ms | **3.29x** | 16.6x |
+| 80% | 0.19ms | 0.61ms | 2.87ms | **3.26x** | 15.4x |
+| 90% | 0.12ms | 0.32ms | 2.10ms | **2.61x** | 17.3x |
+| 95% | 0.06ms | 0.18ms | 0.68ms | **2.91x** | 10.8x |
+| 98% | 0.04ms | 0.16ms | 0.29ms | **3.77x** | 7.0x |
+
+**Average: 3.17x faster than BSR, 13.4x faster than CSR**
+
+### Sparse Attention Performance
+
+| Sequence Length | Dense | Block-Sparse (90%) | Speedup |
+|-----------------|-------|-------------------|---------|
+| 1024 | 1.03ms | 0.22ms | **4.7x** |
+| 2048 | 4.47ms | 0.31ms | **14.3x** |
+
+### Kernel Fusion Performance
+
+| Operation | Unfused | Fused | Speedup |
+|-----------|---------|-------|---------|
+| SpMM + ReLU | 0.53ms | 0.36ms | **1.46x** |
+| SpMM + GELU | 0.40ms | 0.35ms | **1.13x** |
+| FusedSparseLinear | 0.24ms | 0.20ms | **1.24x** |
+
+*Benchmarks run with FP32, averaged over 100 iterations. Block sparsity = fraction of empty 32x32 tiles.*
+
+> **Note**: VOID is designed for **block-sparse** patterns where entire tiles are zero. Random element sparsity (e.g., 90% zeros scattered randomly) does not create block sparsity and won't benefit from VOID.
 
 ## Architecture
 
@@ -213,15 +278,31 @@ ruff check void/ tests/
 ruff format void/ tests/
 ```
 
+## Running Benchmarks
+
+```bash
+# BSR comparison (critical benchmark)
+python benchmarks/bsr_comparison.py
+
+# Attention benchmark
+python benchmarks/attention_benchmark.py
+
+# Fusion benchmark
+python benchmarks/fusion_benchmark.py
+
+# Full validation
+python benchmarks/validation.py
+```
+
 ## Citation
 
 If you use VOID in your research, please cite:
 
 ```bibtex
-@software{void2024,
+@software{void2025,
   title = {VOID: Cache-aware Block Tiling for Sparse Matrix Operations},
   author = {Khushiyant},
-  year = {2024},
+  year = {2025},
   url = {https://github.com/khushiyant/void}
 }
 ```

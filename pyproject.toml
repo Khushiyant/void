@@ -1,7 +1,7 @@
 [project]
 name = "void-sparse"
-version = "0.1.0"
-description = "FlashSparse: Cache-aware block tiling for sparse matrix operations on GPUs"
+version = "0.2.0"
+description = "FlashSparse: Cache-aware block tiling for sparse matrix operations on GPUs - 2025 SOTA"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -15,10 +15,13 @@ keywords = [
     "attention",
     "triton",
     "pytorch",
-    "high-performance-computing"
+    "high-performance-computing",
+    "fp8",
+    "tensor-cores",
+    "flash-attention",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -30,8 +33,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "torch>=2.0.0",
-    "triton>=2.1.0",
+    "torch>=2.1.0",      # Upgraded for FP8 dtype support
+    "triton>=3.0.0",     # Upgraded for FP8 + async_copy
     "scipy>=1.10.0",
     "numpy>=1.24.0",
 ]
