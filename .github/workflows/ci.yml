@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check void/ tests/
+
+      - name: Run ruff format check
+        run: ruff format --check void/ tests/
+
+  test-cpu:
+    name: Test (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run CPU tests
+        run: pytest tests/ -v -k "not cuda" --ignore=tests/test_dtype.py --ignore=tests/test_backward.py
+
+  test-gpu:
+    name: Test (GPU)
+    runs-on: ubuntu-latest
+    # Skip until GPU runner is available
+    if: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run all tests
+        run: pytest tests/ -v
+
+      - name: Run dtype tests
+        run: pytest tests/test_dtype.py -v
+
+      - name: Run backward tests
+        run: pytest tests/test_backward.py -v
+
+  # Self-hosted GPU runner job (for users who set up their own runners)
+  test-gpu-self-hosted:
+    name: Test (GPU - Self Hosted)
+    runs-on: [self-hosted, gpu]
+    if: github.repository_owner == 'khushiyant'  # Only run for repo owner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]"
+
+      - name: Run all tests
+        run: pytest tests/ -v
