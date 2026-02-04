@@ -16,7 +16,7 @@ import triton
 import triton.language as tl
 
 from .format import VOIDTensor
-from .ops import void_spmm, void_spmv
+from .ops import void_spmm, void_spmv, compute_optimal_tile_n
 
 
 def get_triton_dtype(torch_dtype: torch.dtype):
@@ -211,8 +211,8 @@ class VOIDSpMMFunction(Function):
                 grad_output_contig = grad_output.contiguous()
                 b_contig = b.contiguous()
 
-                # Choose TILE_N based on N
-                TILE_N = min(64, triton.next_power_of_2(N))
+                # Choose TILE_N based on N (use consistent selection across all kernels)
+                TILE_N = compute_optimal_tile_n(N)
 
                 # Get output dtype for Triton
                 output_dtype = get_triton_dtype(a_values.dtype)

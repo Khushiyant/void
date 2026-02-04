@@ -18,7 +18,7 @@ from typing import Optional, List, Tuple, Union, Callable
 from enum import Enum
 
 from .format import VOIDTensor
-from .ops import get_triton_dtype
+from .ops import get_triton_dtype, compute_optimal_tile_n
 
 
 class FusedOpType(Enum):
@@ -372,7 +372,7 @@ def _void_spmm_activation_row_bias(
     row_ptr, block_indices = a.get_row_block_info()
     n_block_rows = a.block_grid[0]
 
-    TILE_N = min(64, triton.next_power_of_2(N))
+    TILE_N = compute_optimal_tile_n(N)
     output_dtype = get_triton_dtype(b.dtype)
     activation_code = get_activation_code(activation)
 
@@ -505,7 +505,7 @@ def _void_spmm_activation(
     row_ptr, block_indices = a.get_row_block_info()
     n_block_rows = a.block_grid[0]
 
-    TILE_N = min(64, triton.next_power_of_2(N))
+    TILE_N = compute_optimal_tile_n(N)
     output_dtype = get_triton_dtype(b.dtype)
     activation_code = get_activation_code(activation)
 

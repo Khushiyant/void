@@ -1,6 +1,6 @@
 [project]
 name = "void-sparse"
-version = "0.2.0"
+version = "0.3.0"
 description = "FlashSparse: Cache-aware block tiling for sparse matrix operations on GPUs - 2025 SOTA"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,10 +33,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "torch>=2.1.0",      # Upgraded for FP8 dtype support
-    "triton>=3.0.0",     # Upgraded for FP8 + async_copy
+    "torch>=2.1.0", # Upgraded for FP8 dtype support
+    "triton>=3.0.0", # Upgraded for FP8 + async_copy
     "scipy>=1.10.0",
     "numpy>=1.24.0",
+    "seaborn>=0.13.2",
+    "matplotlib>=3.10.8",
 ]
 
 [project.urls]

@@ -8,17 +8,22 @@ This package provides:
 - VOIDSpMM/SparseLinear: Autograd-enabled modules for training
 - void_spmm_stream_k: Load-balanced SpMM for power-law distributions
 
-2025 SOTA Features:
+2025/2026 SOTA Features:
 - FP8 support (FlashAttention-3 style)
 - Data-affinity reordering (Acc-SpMM style)
 - Enhanced pipelining with 3-5 stages
 - Operation fusion framework (SpMM + activation)
 - Dynamic kernel selection
 - Hybrid core scheduling (Hopper+)
+- Tensor Core configuration and alignment
+- 2:4 Structured sparsity (NVIDIA Sparse Tensor Cores)
+- INT8/INT4 quantization support
+- Dynamic sparsity patterns
+- Multi-GPU distributed computation
 """
 
 from .format import VOIDTensor, csr_to_void, dense_to_void
-from .ops import void_spmm, void_spmv, void_spmm_autotuned
+from .ops import void_spmm, void_spmv, void_spmm_autotuned, void_spmm_pipelined, compute_optimal_tile_n, MIN_TENSOR_CORE_K
 from .autotune import void_spmm_with_autotune, KernelConfig, clear_autotune_cache
 from .adaptive import (
     csr_to_void_adaptive,
@@ -30,6 +35,7 @@ from .adaptive import (
 # Attention
 from .attention import (
     sparse_attention,
+    sparse_attention_pipelined,
     local_attention,
     block_sparse_attention,
     SparseAttentionMask,
@@ -37,6 +43,78 @@ from .attention import (
     create_causal_local_mask,
     create_strided_attention_mask,
     create_block_sparse_mask,
+)
+
+# Tensor Core configuration (2026 SOTA)
+from .tensor_core import (
+    TCPrecision,
+    TensorCoreConfig,
+    TCAlignmentResult,
+    check_tensor_core_alignment,
+    get_optimal_tc_tile_size,
+    should_use_tensor_cores as tc_should_use_tensor_cores,
+    get_gpu_tensor_core_info,
+    get_triton_tc_config,
+)
+
+# 2:4 Structured sparsity (2026 SOTA)
+from .structured import (
+    PruneMethod,
+    StructuredSparsityMetadata,
+    VOIDStructuredTensor,
+    check_2_4_compatible,
+    prune_to_2_4,
+    compress_2_4,
+    decompress_2_4,
+    compress_2_4_vectorized,
+    decompress_2_4_vectorized,
+    void_to_structured,
+    structured_to_dense,
+    get_structured_sparsity_info,
+)
+
+# INT8/INT4 quantization (2026 SOTA)
+from .int_quant import (
+    IntFormat,
+    ScaleMode,
+    IntQuantConfig,
+    QuantizationParams,
+    Int8VOIDTensor,
+    quantize_tensor,
+    dequantize_tensor,
+    quantize_void_tensor,
+    dequantize_void_tensor,
+    void_spmm_int8,
+    get_quantization_error,
+)
+
+# Dynamic sparsity (2026 SOTA)
+from .dynamic import (
+    UpdateStrategy,
+    DynamicVOIDTensor,
+    DynamicAttentionConfig,
+    create_dynamic_void_tensor,
+    from_void_tensor,
+    update_from_topk_scores,
+    update_from_mask,
+    update_from_threshold,
+    compute_topk_attention_mask,
+    dynamic_topk_attention,
+    progressive_sparsification,
+)
+
+# Multi-GPU distributed (2026 SOTA)
+from .distributed import (
+    ShardingStrategy,
+    DistributedVOIDTensor,
+    PipelineStage,
+    is_distributed,
+    get_world_size,
+    get_rank,
+    shard_void_tensor,
+    distributed_void_spmm,
+    gather_void_tensor,
+    broadcast_void_tensor,
 )
 
 # Autograd
@@ -126,9 +204,13 @@ __all__ = [
     "void_spmm",
     "void_spmv",
     "void_spmm_autotuned",
+    "void_spmm_pipelined",
     "void_spmm_with_autotune",
+    "compute_optimal_tile_n",
+    "MIN_TENSOR_CORE_K",
     # Attention
     "sparse_attention",
+    "sparse_attention_pipelined",
     "local_attention",
     "block_sparse_attention",
     "SparseAttentionMask",
@@ -152,6 +234,63 @@ __all__ = [
     "select_adaptive_tile_size",
     "analyze_sparsity_pattern",
     "TileSizeMetrics",
+    # Tensor Core configuration (2026 SOTA)
+    "TCPrecision",
+    "TensorCoreConfig",
+    "TCAlignmentResult",
+    "check_tensor_core_alignment",
+    "get_optimal_tc_tile_size",
+    "tc_should_use_tensor_cores",
+    "get_gpu_tensor_core_info",
+    "get_triton_tc_config",
+    # 2:4 Structured sparsity (2026 SOTA)
+    "PruneMethod",
+    "StructuredSparsityMetadata",
+    "VOIDStructuredTensor",
+    "check_2_4_compatible",
+    "prune_to_2_4",
+    "compress_2_4",
+    "decompress_2_4",
+    "compress_2_4_vectorized",
+    "decompress_2_4_vectorized",
+    "void_to_structured",
+    "structured_to_dense",
+    "get_structured_sparsity_info",
+    # INT8/INT4 quantization (2026 SOTA)
+    "IntFormat",
+    "ScaleMode",
+    "IntQuantConfig",
+    "QuantizationParams",
+    "Int8VOIDTensor",
+    "quantize_tensor",
+    "dequantize_tensor",
+    "quantize_void_tensor",
+    "dequantize_void_tensor",
+    "void_spmm_int8",
+    "get_quantization_error",
+    # Dynamic sparsity (2026 SOTA)
+    "UpdateStrategy",
+    "DynamicVOIDTensor",
+    "DynamicAttentionConfig",
+    "create_dynamic_void_tensor",
+    "from_void_tensor",
+    "update_from_topk_scores",
+    "update_from_mask",
+    "update_from_threshold",
+    "compute_topk_attention_mask",
+    "dynamic_topk_attention",
+    "progressive_sparsification",
+    # Multi-GPU distributed (2026 SOTA)
+    "ShardingStrategy",
+    "DistributedVOIDTensor",
+    "PipelineStage",
+    "is_distributed",
+    "get_world_size",
+    "get_rank",
+    "shard_void_tensor",
+    "distributed_void_spmm",
+    "gather_void_tensor",
+    "broadcast_void_tensor",
     # FP8 support (2025 SOTA)
     "FP8Format",
     "FP8Config",
@@ -198,7 +337,6 @@ __all__ = [
     "WorkPartition",
     "HybridScheduler",
     "get_execution_plan",
-    "should_use_tensor_cores",
 ]
 
-__version__ = "0.2.0"  # 2025 SOTA release
+__version__ = "0.3.0"  # 2026 SOTA release with structured sparsity, INT8, dynamic, and distributed

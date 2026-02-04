@@ -480,3 +480,201 @@ def block_sparse_attention(
     seq_len = q.shape[2]
     mask = create_block_sparse_mask(seq_len, block_size, sparsity, q.device)
     return sparse_attention(q, k, v, mask)
+
+
+# =============================================================================
+# Pipelined Sparse Attention Kernel (async memory prefetching)
+# =============================================================================
+
+def get_attention_autotune_configs():
+    """Generate autotuning configurations for pipelined attention."""
+    configs = []
+    for BLOCK_SIZE in [32, 64]:
+        for num_warps in [4, 8]:
+            for num_stages in [3, 4, 5]:
+                configs.append(
+                    triton.Config(
+                        {'BLOCK_SIZE': BLOCK_SIZE, 'NUM_STAGES': num_stages},
+                        num_warps=num_warps,
+                        num_stages=num_stages,
+                    )
+                )
+    return configs
+
+
+@triton.autotune(
+    configs=get_attention_autotune_configs(),
+    key=['seq_len', 'head_dim', 'n_blocks'],
+)
+@triton.jit
+def _sparse_attention_pipelined_kernel(
+    Q, K, V, Out,
+    # Mask info
+    block_rows_ptr, block_cols_ptr,
+    block_offsets_ptr,  # [n_query_blocks + 1] - CSR-style offsets
+    # Dimensions
+    seq_len, head_dim, n_blocks, n_heads,
+    # Strides (for batch dimension)
+    stride_batch, stride_head, stride_seq, stride_dim,
+    # Softmax scale
+    sm_scale,
+    # Block sizes
+    BLOCK_SIZE: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    OUTPUT_DTYPE: tl.constexpr = tl.float32,
+    NUM_STAGES: tl.constexpr = 3,
+):
+    """
+    Pipelined fused sparse attention forward kernel.
+
+    Uses software pipelining (num_stages) to overlap memory loads
+    with computation for better memory latency hiding.
+
+    Grid: (batch * n_heads, n_query_blocks)
+    """
+    # Program IDs
+    pid_bh = tl.program_id(0)  # batch * head index
+    pid_q = tl.program_id(1)   # query block
+
+    # Decompose batch and head
+    batch_idx = pid_bh // n_heads
+    head_idx = pid_bh % n_heads
+
+    # Base offset for this batch/head combination
+    base_offset = batch_idx * stride_batch + head_idx * stride_head
+
+    # Get the range of key blocks for this query block
+    block_start = tl.load(block_offsets_ptr + pid_q)
+    block_end = tl.load(block_offsets_ptr + pid_q + 1)
+    n_key_blocks = block_end - block_start
+
+    # Initialize accumulators in FP32 for numerical stability
+    m_i = tl.zeros((BLOCK_SIZE,), dtype=tl.float32) - float('inf')
+    l_i = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    acc = tl.zeros((BLOCK_SIZE, HEAD_DIM), dtype=tl.float32)
+
+    # Load Q block and cast to FP32
+    q_seq_start = pid_q * BLOCK_SIZE
+    q_ptrs = Q + base_offset + (q_seq_start + tl.arange(0, BLOCK_SIZE)[:, None]) * stride_seq + tl.arange(0, HEAD_DIM)[None, :] * stride_dim
+    q_mask = (q_seq_start + tl.arange(0, BLOCK_SIZE)[:, None]) < seq_len
+    q = tl.load(q_ptrs, mask=q_mask, other=0.0).to(tl.float32)
+
+    # Pipelined iteration over key blocks with explicit prefetching
+    for block_offset in tl.range(0, n_key_blocks, num_stages=NUM_STAGES):
+        block_idx = block_start + block_offset
+        k_block = tl.load(block_cols_ptr + block_idx)
+        k_seq_start = k_block * BLOCK_SIZE
+
+        # Load K block and cast to FP32
+        k_ptrs = K + base_offset + (k_seq_start + tl.arange(0, BLOCK_SIZE)[:, None]) * stride_seq + tl.arange(0, HEAD_DIM)[None, :] * stride_dim
+        k_mask = (k_seq_start + tl.arange(0, BLOCK_SIZE)[:, None]) < seq_len
+        k = tl.load(k_ptrs, mask=k_mask, other=0.0).to(tl.float32)
+
+        # Load V block and cast to FP32
+        v_ptrs = V + base_offset + (k_seq_start + tl.arange(0, BLOCK_SIZE)[:, None]) * stride_seq + tl.arange(0, HEAD_DIM)[None, :] * stride_dim
+        v = tl.load(v_ptrs, mask=k_mask, other=0.0).to(tl.float32)
+
+        # Compute attention scores: Q @ K^T
+        qk = tl.dot(q, tl.trans(k)) * sm_scale
+
+        # Mask out invalid positions
+        q_pos = q_seq_start + tl.arange(0, BLOCK_SIZE)
+        k_pos = k_seq_start + tl.arange(0, BLOCK_SIZE)
+        qk_mask = (q_pos[:, None] < seq_len) & (k_pos[None, :] < seq_len)
+        qk = tl.where(qk_mask, qk, float('-inf'))
+
+        # Online softmax update
+        m_ij = tl.max(qk, axis=1)
+        m_new = tl.maximum(m_i, m_ij)
+
+        # Correction factors
+        alpha = tl.exp(m_i - m_new)
+        beta = tl.exp(m_ij - m_new)
+
+        # Update running sum
+        l_i = l_i * alpha + tl.sum(tl.exp(qk - m_ij[:, None]) * beta[:, None], axis=1)
+
+        # Update accumulator
+        p = tl.exp(qk - m_new[:, None])
+        acc = acc * alpha[:, None] + tl.dot(p, v)
+
+        m_i = m_new
+
+    # Normalize output
+    out = acc / l_i[:, None]
+
+    # Store output with target dtype
+    o_ptrs = Out + base_offset + (q_seq_start + tl.arange(0, BLOCK_SIZE)[:, None]) * stride_seq + tl.arange(0, HEAD_DIM)[None, :] * stride_dim
+    o_mask = (q_seq_start + tl.arange(0, BLOCK_SIZE)[:, None]) < seq_len
+    tl.store(o_ptrs, out.to(OUTPUT_DTYPE), mask=o_mask)
+
+
+def sparse_attention_pipelined(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    mask: SparseAttentionMask,
+    scale: Optional[float] = None,
+) -> torch.Tensor:
+    """
+    Compute sparse attention with pipelined memory prefetching.
+
+    This variant uses autotuned software pipelining to overlap memory
+    loads with computation for better performance on irregular patterns.
+
+    Args:
+        q: Query tensor [batch, n_heads, seq_len, head_dim]
+        k: Key tensor [batch, n_heads, seq_len, head_dim]
+        v: Value tensor [batch, n_heads, seq_len, head_dim]
+        mask: SparseAttentionMask defining which blocks attend
+        scale: Softmax scale (default: 1/sqrt(head_dim))
+
+    Returns:
+        Output tensor [batch, n_heads, seq_len, head_dim]
+    """
+    batch, n_heads, seq_len, head_dim = q.shape
+
+    assert k.shape == q.shape and v.shape == q.shape
+    assert seq_len == mask.seq_len
+    assert q.is_cuda and k.is_cuda and v.is_cuda
+
+    if scale is None:
+        scale = 1.0 / math.sqrt(head_dim)
+
+    # Ensure contiguous
+    q = q.contiguous()
+    k = k.contiguous()
+    v = v.contiguous()
+
+    # Output
+    out = torch.empty_like(q)
+
+    # Build CSR-style offsets for query blocks
+    n_query_blocks = mask.n_seq_blocks
+    block_counts = torch.zeros(n_query_blocks, dtype=torch.int32, device=q.device)
+    block_counts.scatter_add_(0, mask.block_rows.long(), torch.ones_like(mask.block_rows))
+    block_offsets = torch.zeros(n_query_blocks + 1, dtype=torch.int32, device=q.device)
+    block_offsets[1:] = torch.cumsum(block_counts, dim=0)
+
+    # Sort mask by query block for coalesced access
+    sort_idx = torch.argsort(mask.block_rows.long() * mask.n_seq_blocks + mask.block_cols.long())
+    sorted_block_rows = mask.block_rows[sort_idx]
+    sorted_block_cols = mask.block_cols[sort_idx]
+
+    # Get output dtype for Triton
+    output_dtype = get_triton_dtype(q.dtype)
+
+    # Grid is determined by autotuner's BLOCK_SIZE
+    grid = lambda meta: (batch * n_heads, (seq_len + meta['BLOCK_SIZE'] - 1) // meta['BLOCK_SIZE'])
+
+    _sparse_attention_pipelined_kernel[grid](
+        q, k, v, out,
+        sorted_block_rows, sorted_block_cols, block_offsets,
+        seq_len, head_dim, mask.n_blocks, n_heads,
+        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+        scale,
+        HEAD_DIM=head_dim,
+        OUTPUT_DTYPE=output_dtype,
+    )
+
+    return out

@@ -30,6 +30,35 @@ def get_triton_dtype(torch_dtype: torch.dtype):
     return dtype_map.get(torch_dtype, tl.float32)
 
 
+# Minimum K dimension for Tensor Core operations
+MIN_TENSOR_CORE_K = 16
+
+
+def compute_optimal_tile_n(N: int) -> int:
+    """
+    Compute optimal TILE_N for memory coalescing and Tensor Core efficiency.
+
+    This function ensures consistent TILE_N selection across all kernels
+    (SpMM, fused ops, backward passes) for optimal performance.
+
+    Args:
+        N: Output column dimension
+
+    Returns:
+        Optimal TILE_N (16, 32, 64, or 128)
+    """
+    if N >= 128:
+        return 128
+    elif N >= 64:
+        return 64
+    elif N >= 32:
+        return 32
+    elif N >= 16:
+        return 16
+    else:
+        return triton.next_power_of_2(N)
+
+
 # =============================================================================
 # SpMM Kernel: VOID Sparse @ Dense -> Dense
 # =============================================================================
@@ -463,6 +492,188 @@ def void_spmm_autotuned(
     grid = lambda meta: (n_block_rows, triton.cdiv(N, meta['TILE_N']))
 
     void_spmm_autotuned_kernel[grid](
+        a.values, a.block_rows, a.block_cols, row_ptr, block_indices,
+        b, out,
+        M, N, K, a.n_blocks, n_block_rows,
+        b.stride(0), b.stride(1),
+        out.stride(0), out.stride(1),
+        TILE_M=tile_m, TILE_K=tile_k,
+        OUTPUT_DTYPE=output_dtype,
+    )
+
+    return out
+
+
+# =============================================================================
+# Pipelined SpMM Kernel (async memory prefetching)
+# =============================================================================
+
+def get_pipelined_autotune_configs():
+    """Generate autotuning configurations for pipelined kernel."""
+    configs = []
+    # More aggressive pipelining configurations
+    for TILE_N in [64, 128]:
+        for num_warps in [4, 8]:
+            for num_stages in [3, 4, 5]:  # Higher stages for better pipelining
+                configs.append(
+                    triton.Config(
+                        {'TILE_N': TILE_N, 'NUM_STAGES': num_stages},
+                        num_warps=num_warps,
+                        num_stages=num_stages,
+                    )
+                )
+    return configs
+
+
+@triton.autotune(
+    configs=get_pipelined_autotune_configs(),
+    key=['M', 'N', 'K', 'n_blocks'],
+)
+@triton.jit
+def void_spmm_pipelined_kernel(
+    # Sparse matrix A (VOID format)
+    a_values_ptr,
+    a_block_rows_ptr,
+    a_block_cols_ptr,
+    a_row_ptr_ptr,
+    a_block_idx_ptr,
+    # Dense matrix B
+    b_ptr,
+    # Output matrix C
+    c_ptr,
+    # Dimensions
+    M, N, K,
+    n_blocks,
+    n_block_rows,
+    # Strides
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    # Tile sizes (constexpr)
+    TILE_M: tl.constexpr,
+    TILE_K: tl.constexpr,
+    TILE_N: tl.constexpr,
+    NUM_STAGES: tl.constexpr,
+    OUTPUT_DTYPE: tl.constexpr = tl.float32,
+):
+    """
+    Pipelined SpMM kernel with async memory prefetching.
+
+    Uses software pipelining (num_stages) to overlap memory loads
+    with computation, improving performance for irregular sparse patterns.
+    """
+    pid_m = tl.program_id(0)  # Which block row of A
+    pid_n = tl.program_id(1)  # Which tile column of output
+
+    if pid_m >= n_block_rows:
+        return
+
+    # Get the range of blocks in this row
+    row_start = tl.load(a_row_ptr_ptr + pid_m)
+    row_end = tl.load(a_row_ptr_ptr + pid_m + 1)
+    n_row_blocks = row_end - row_start
+
+    # Initialize accumulator in FP32 for numerical stability
+    acc = tl.zeros((TILE_M, TILE_N), dtype=tl.float32)
+    col_start = pid_n * TILE_N
+
+    # Use pipelined loop with explicit num_stages hint
+    # This tells Triton to prefetch future iterations
+    for block_offset in tl.range(0, n_row_blocks, num_stages=NUM_STAGES):
+        block_idx = row_start + block_offset
+
+        # Get the actual block index (sorted by row)
+        actual_idx = tl.load(a_block_idx_ptr + block_idx)
+
+        # Get block column (which determines K offset)
+        block_col = tl.load(a_block_cols_ptr + actual_idx)
+        k_offset = block_col * TILE_K
+
+        # Load A tile using block pointer
+        a_tile_ptr = tl.make_block_ptr(
+            base=a_values_ptr + actual_idx * TILE_M * TILE_K,
+            shape=(TILE_M, TILE_K),
+            strides=(TILE_K, 1),
+            offsets=(0, 0),
+            block_shape=(TILE_M, TILE_K),
+            order=(1, 0),
+        )
+        a_tile = tl.load(a_tile_ptr).to(tl.float32)
+
+        # Load B tile with prefetch hint via block pointer
+        b_tile_ptr = tl.make_block_ptr(
+            base=b_ptr,
+            shape=(K, N),
+            strides=(stride_bk, stride_bn),
+            offsets=(k_offset, col_start),
+            block_shape=(TILE_K, TILE_N),
+            order=(1, 0),
+        )
+        b_tile = tl.load(b_tile_ptr, boundary_check=(0, 1)).to(tl.float32)
+
+        # Accumulate: C[m, n] += A[m, k] * B[k, n]
+        acc += tl.dot(a_tile, b_tile)
+
+    # Store output tile with target dtype
+    out_row = pid_m * TILE_M
+    c_tile_ptr = tl.make_block_ptr(
+        base=c_ptr,
+        shape=(M, N),
+        strides=(stride_cm, stride_cn),
+        offsets=(out_row, col_start),
+        block_shape=(TILE_M, TILE_N),
+        order=(1, 0),
+    )
+    tl.store(c_tile_ptr, acc.to(OUTPUT_DTYPE), boundary_check=(0, 1))
+
+
+def void_spmm_pipelined(
+    a: VOIDTensor,
+    b: torch.Tensor,
+    out: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Pipelined Sparse-Dense Matrix Multiplication with async memory prefetching.
+
+    This variant uses software pipelining to overlap memory loads with
+    computation, which can improve performance for irregular sparse patterns
+    where memory latency is the bottleneck.
+
+    Args:
+        a: VOID sparse matrix [M, K]
+        b: Dense matrix [K, N]
+        out: Optional output buffer [M, N]
+
+    Returns:
+        Dense matrix C [M, N]
+    """
+    assert b.dim() == 2, "B must be 2D matrix"
+    assert a.shape[1] == b.shape[0], f"Dimension mismatch: A is {a.shape}, B is {b.shape}"
+    assert b.is_cuda and a.values.is_cuda, "Tensors must be on CUDA"
+
+    M, K = a.shape
+    _, N = b.shape
+    tile_m, tile_k = a.tile_size
+
+    if not b.is_contiguous():
+        b = b.contiguous()
+
+    if out is None:
+        out = torch.zeros(M, N, dtype=b.dtype, device=b.device)
+    else:
+        out.zero_()
+
+    if a.n_blocks == 0:
+        return out
+
+    row_ptr, block_indices = a.get_row_block_info()
+    n_block_rows = a.block_grid[0]
+
+    output_dtype = get_triton_dtype(b.dtype)
+
+    # Grid is determined by autotuner's TILE_N
+    grid = lambda meta: (n_block_rows, triton.cdiv(N, meta['TILE_N']))
+
+    void_spmm_pipelined_kernel[grid](
         a.values, a.block_rows, a.block_cols, row_ptr, block_indices,
         b, out,
         M, N, K, a.n_blocks, n_block_rows,

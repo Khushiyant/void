@@ -10,9 +10,14 @@ The VOID format stores sparse matrices as a collection of dense tiles with:
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
+import warnings
 import torch
 import numpy as np
 from scipy import sparse
+
+
+# Minimum tile size for Tensor Core compatibility with Triton's tl.dot()
+MIN_TENSOR_CORE_TILE = 16
 
 
 def morton_encode(x: int, y: int) -> int:
@@ -258,19 +263,31 @@ def csr_to_void(
     tile_size: int = 32,
     dtype: torch.dtype = torch.float32,
     device: str = 'cpu',
+    warn_small_tiles: bool = True,
 ) -> VOIDTensor:
     """
     Convert CSR sparse matrix to VOID format.
 
     Args:
         matrix: scipy CSR sparse matrix
-        tile_size: Size of square tiles (default 32)
+        tile_size: Size of square tiles (default 32). Must be >= 16 for
+            Tensor Core compatibility with Triton's tl.dot()
         dtype: Output data type
         device: Output device
+        warn_small_tiles: If True (default), warn when tile_size < 16
 
     Returns:
         VOIDTensor in the specified format
     """
+    # Warn about Tensor Core incompatible tile sizes
+    if warn_small_tiles and tile_size < MIN_TENSOR_CORE_TILE:
+        warnings.warn(
+            f"Tile size {tile_size} is below minimum for Tensor Cores ({MIN_TENSOR_CORE_TILE}). "
+            f"Triton's tl.dot() requires K >= 16. SpMM kernels will fail with this tile size. "
+            f"Consider using tile_size >= 16 for Tensor Core compatibility.",
+            UserWarning
+        )
+
     if not sparse.isspmatrix_csr(matrix):
         matrix = sparse.csr_matrix(matrix)
 

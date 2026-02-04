@@ -53,3 +53,5 @@ Thumbs.db
 *.log
 
 # Development artifacts
+figures/
+benchmarks/visualize_results.py

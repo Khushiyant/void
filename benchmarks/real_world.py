@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from void import csr_to_void, void_spmm
 from void.stream_k import void_spmm_stream_k, analyze_workload_balance
+from void.attention import sparse_attention, SparseAttentionMask
 
 
 # =============================================================================
@@ -496,6 +497,303 @@ def print_results_table(results: List[RealWorldResult], title: str):
         )
 
 
+# =============================================================================
+# Attention Pattern Benchmarks
+# =============================================================================
+
+def create_causal_attention_mask_dense(
+    seq_len: int,
+    block_size: int = 64,
+) -> sp.csr_matrix:
+    """
+    Create a causal (GPT/LLaMA style) attention mask as sparse matrix.
+
+    Lower triangular pattern - each position attends to all previous positions.
+    """
+    rows, cols, data = [], [], []
+    for i in range(seq_len):
+        for j in range(i + 1):  # Include self and all previous
+            rows.append(i)
+            cols.append(j)
+            data.append(1.0)
+
+    return sp.csr_matrix((data, (rows, cols)), shape=(seq_len, seq_len), dtype=np.float32)
+
+
+def create_sliding_window_mask(
+    seq_len: int,
+    window_size: int = 256,
+) -> sp.csr_matrix:
+    """
+    Create a Longformer-style sliding window attention mask.
+
+    Each position attends to `window_size` positions on each side.
+    """
+    rows, cols, data = [], [], []
+    half_window = window_size // 2
+
+    for i in range(seq_len):
+        start = max(0, i - half_window)
+        end = min(seq_len, i + half_window + 1)
+        for j in range(start, end):
+            rows.append(i)
+            cols.append(j)
+            data.append(1.0)
+
+    return sp.csr_matrix((data, (rows, cols)), shape=(seq_len, seq_len), dtype=np.float32)
+
+
+def create_bigbird_mask(
+    seq_len: int,
+    window_size: int = 64,
+    n_global: int = 2,
+    n_random: int = 3,
+) -> sp.csr_matrix:
+    """
+    Create a BigBird attention mask: local + global + random.
+
+    Args:
+        seq_len: Sequence length
+        window_size: Local window size
+        n_global: Number of global tokens at start
+        n_random: Number of random tokens per position
+    """
+    mask = np.zeros((seq_len, seq_len), dtype=np.float32)
+
+    # Local window
+    half_window = window_size // 2
+    for i in range(seq_len):
+        start = max(0, i - half_window)
+        end = min(seq_len, i + half_window + 1)
+        mask[i, start:end] = 1.0
+
+    # Global tokens (first n_global positions attend to/from all)
+    mask[:n_global, :] = 1.0
+    mask[:, :n_global] = 1.0
+
+    # Random connections
+    for i in range(seq_len):
+        random_indices = np.random.choice(seq_len, size=min(n_random, seq_len), replace=False)
+        mask[i, random_indices] = 1.0
+
+    return sp.csr_matrix(mask, dtype=np.float32)
+
+
+def create_dilated_sliding_window_mask(
+    seq_len: int,
+    window_size: int = 64,
+    dilation: int = 2,
+) -> sp.csr_matrix:
+    """
+    Create a dilated sliding window mask.
+
+    Similar to sliding window but with gaps (dilation) for longer-range attention.
+    """
+    rows, cols, data = [], [], []
+    half_window = window_size // 2
+
+    for i in range(seq_len):
+        for offset in range(-half_window * dilation, (half_window + 1) * dilation, dilation):
+            j = i + offset
+            if 0 <= j < seq_len:
+                rows.append(i)
+                cols.append(j)
+                data.append(1.0)
+
+    return sp.csr_matrix((data, (rows, cols)), shape=(seq_len, seq_len), dtype=np.float32)
+
+
+def create_strided_attention_mask(
+    seq_len: int,
+    stride: int = 128,
+) -> sp.csr_matrix:
+    """
+    Create strided attention mask (attend to every nth position).
+
+    Each position attends to itself and every `stride`-th position.
+    """
+    rows, cols, data = [], [], []
+
+    for i in range(seq_len):
+        # Self-attention
+        rows.append(i)
+        cols.append(i)
+        data.append(1.0)
+
+        # Strided attention
+        for j in range(0, seq_len, stride):
+            if j != i:
+                rows.append(i)
+                cols.append(j)
+                data.append(1.0)
+
+    return sp.csr_matrix((data, (rows, cols)), shape=(seq_len, seq_len), dtype=np.float32)
+
+
+@dataclass
+class AttentionPatternResult:
+    """Result for attention pattern benchmark."""
+    name: str
+    seq_len: int
+    sparsity: float
+    void_time_ms: float
+    dense_time_ms: float
+    speedup_vs_dense: float
+    memory_ratio: float  # sparse_memory / dense_memory
+
+
+def benchmark_attention_pattern(
+    name: str,
+    mask: sp.csr_matrix,
+    head_dim: int = 64,
+    n_heads: int = 8,
+    batch: int = 2,
+    n_iterations: int = 50,
+    warmup: int = 10,
+) -> AttentionPatternResult:
+    """Benchmark a single attention pattern."""
+    from void import (
+        sparse_attention,
+        SparseAttentionMask,
+    )
+
+    device = torch.device("cuda")
+    seq_len = mask.shape[0]
+
+    # Convert mask to VOID SparseAttentionMask
+    block_size = 64
+    n_blocks = (seq_len + block_size - 1) // block_size
+
+    # Extract block-level mask
+    mask_dense = mask.toarray()
+    block_rows, block_cols = [], []
+    for br in range(n_blocks):
+        for bc in range(n_blocks):
+            r_start, r_end = br * block_size, min((br + 1) * block_size, seq_len)
+            c_start, c_end = bc * block_size, min((bc + 1) * block_size, seq_len)
+            if mask_dense[r_start:r_end, c_start:c_end].any():
+                block_rows.append(br)
+                block_cols.append(bc)
+
+    sparse_mask = SparseAttentionMask(
+        block_rows=torch.tensor(block_rows, dtype=torch.int32, device=device),
+        block_cols=torch.tensor(block_cols, dtype=torch.int32, device=device),
+        n_blocks=len(block_rows),
+        seq_len=seq_len,
+        block_size=block_size,
+    )
+
+    # Create Q, K, V
+    q = torch.randn(batch, n_heads, seq_len, head_dim, device=device)
+    k = torch.randn(batch, n_heads, seq_len, head_dim, device=device)
+    v = torch.randn(batch, n_heads, seq_len, head_dim, device=device)
+
+    scale = 1.0 / (head_dim ** 0.5)
+
+    # Warmup
+    for _ in range(warmup):
+        _ = sparse_attention(q, k, v, sparse_mask, scale)
+        _ = torch.softmax(q @ k.transpose(-2, -1) * scale, dim=-1) @ v
+    torch.cuda.synchronize()
+
+    # Sparse attention
+    start = time.perf_counter()
+    for _ in range(n_iterations):
+        _ = sparse_attention(q, k, v, sparse_mask, scale)
+    torch.cuda.synchronize()
+    void_time = (time.perf_counter() - start) / n_iterations * 1000
+
+    # Dense attention
+    start = time.perf_counter()
+    for _ in range(n_iterations):
+        _ = torch.softmax(q @ k.transpose(-2, -1) * scale, dim=-1) @ v
+    torch.cuda.synchronize()
+    dense_time = (time.perf_counter() - start) / n_iterations * 1000
+
+    sparsity = 1.0 - mask.nnz / (seq_len * seq_len)
+    memory_ratio = len(block_rows) * block_size * block_size / (seq_len * seq_len)
+
+    return AttentionPatternResult(
+        name=name,
+        seq_len=seq_len,
+        sparsity=sparsity,
+        void_time_ms=void_time,
+        dense_time_ms=dense_time,
+        speedup_vs_dense=dense_time / void_time if void_time > 0 else 0,
+        memory_ratio=memory_ratio,
+    )
+
+
+def run_attention_pattern_benchmarks() -> List[AttentionPatternResult]:
+    """Benchmark various attention patterns."""
+    results = []
+
+    # Adjust sizes based on GPU memory
+    gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+
+    if gpu_mem_gb < 8:
+        seq_lengths = [512, 1024]
+        batch = 1
+    elif gpu_mem_gb < 16:
+        seq_lengths = [1024, 2048]
+        batch = 2
+    else:
+        seq_lengths = [1024, 2048, 4096]
+        batch = 4
+
+    patterns = [
+        ("Causal (GPT)", create_causal_attention_mask_dense),
+        ("Sliding-256", lambda s: create_sliding_window_mask(s, 256)),
+        ("Sliding-512", lambda s: create_sliding_window_mask(s, 512)),
+        ("BigBird", lambda s: create_bigbird_mask(s, 64, 2, 3)),
+        ("Dilated-2x", lambda s: create_dilated_sliding_window_mask(s, 64, 2)),
+        ("Strided-128", lambda s: create_strided_attention_mask(s, 128)),
+    ]
+
+    for seq_len in seq_lengths:
+        print(f"\nSequence length: {seq_len}")
+        print("-" * 50)
+
+        for pattern_name, pattern_fn in patterns:
+            try:
+                mask = pattern_fn(seq_len)
+                result = benchmark_attention_pattern(
+                    f"{pattern_name} (L={seq_len})",
+                    mask,
+                    batch=batch,
+                )
+                results.append(result)
+                print(f"  {pattern_name}: {result.void_time_ms:.2f}ms (sparse) vs {result.dense_time_ms:.2f}ms (dense), "
+                      f"speedup: {result.speedup_vs_dense:.2f}x, sparsity: {result.sparsity:.1%}")
+            except Exception as e:
+                print(f"  {pattern_name}: FAILED - {e}")
+                torch.cuda.empty_cache()
+
+        torch.cuda.empty_cache()
+
+    return results
+
+
+def print_attention_results_table(results: List[AttentionPatternResult]):
+    """Print formatted attention results table."""
+    print(f"\n{'=' * 90}")
+    print("ATTENTION PATTERN BENCHMARKS")
+    print(f"{'=' * 90}")
+
+    header = (
+        f"{'Pattern':<30} {'SeqLen':>8} {'Sparsity':>10} "
+        f"{'Sparse':>10} {'Dense':>10} {'Speedup':>10}"
+    )
+    print(header)
+    print("-" * 90)
+
+    for r in results:
+        print(
+            f"{r.name:<30} {r.seq_len:>8} {r.sparsity:>9.1%} "
+            f"{r.void_time_ms:>9.2f}ms {r.dense_time_ms:>9.2f}ms {r.speedup_vs_dense:>9.2f}x"
+        )
+
+
 def main():
     print("=" * 100)
     print("VOID Real-World Benchmarks")
@@ -508,6 +806,17 @@ def main():
     print(f"GPU: {torch.cuda.get_device_name()}\n")
 
     all_results = []
+    attention_results = []
+
+    # Attention Pattern benchmarks (new)
+    print("\n" + "=" * 50)
+    print("ATTENTION PATTERNS")
+    print("=" * 50)
+    try:
+        attention_results = run_attention_pattern_benchmarks()
+    except Exception as e:
+        print(f"Attention benchmarks failed: {e}")
+        torch.cuda.empty_cache()
 
     # Pruned NN benchmarks (most important for ML use case)
     print("\n" + "=" * 50)
@@ -531,6 +840,8 @@ def main():
     all_results.extend(suite_results)
 
     # Summary tables
+    if attention_results:
+        print_attention_results_table(attention_results)
     print_results_table([r for r in all_results if r.category == "PrunedNN"], "Pruned Neural Networks")
     print_results_table([r for r in all_results if r.category == "Graph"], "Graph Neural Networks")
     print_results_table([r for r in all_results if r.category == "SuiteSparse"], "Scientific Computing")
@@ -540,19 +851,31 @@ def main():
     print("OVERALL SUMMARY")
     print("=" * 100)
 
+    # Attention patterns summary
+    if attention_results:
+        avg_speedup = np.mean([r.speedup_vs_dense for r in attention_results])
+        wins = sum(1 for r in attention_results if r.speedup_vs_dense > 1.0)
+        print(f"Attention: {avg_speedup:.2f}x avg speedup vs dense, {wins}/{len(attention_results)} wins")
+
     for category in ["PrunedNN", "Graph", "SuiteSparse"]:
         cat_results = [r for r in all_results if r.category == category]
         if cat_results:
             avg_speedup = np.mean([r.speedup_vs_cusparse for r in cat_results])
             wins = sum(1 for r in cat_results if r.speedup_vs_cusparse > 1.0)
-            print(f"{category}: {avg_speedup:.2f}x avg speedup, {wins}/{len(cat_results)} wins")
+            print(f"{category}: {avg_speedup:.2f}x avg speedup vs cuSPARSE, {wins}/{len(cat_results)} wins")
 
     # Best and worst cases
     if all_results:
         best = max(all_results, key=lambda r: r.speedup_vs_cusparse)
         worst = min(all_results, key=lambda r: r.speedup_vs_cusparse)
-        print(f"\nBest: {best.name} ({best.speedup_vs_cusparse:.2f}x)")
-        print(f"Worst: {worst.name} ({worst.speedup_vs_cusparse:.2f}x)")
+        print(f"\nSpMM Best: {best.name} ({best.speedup_vs_cusparse:.2f}x)")
+        print(f"SpMM Worst: {worst.name} ({worst.speedup_vs_cusparse:.2f}x)")
+
+    if attention_results:
+        best_attn = max(attention_results, key=lambda r: r.speedup_vs_dense)
+        worst_attn = min(attention_results, key=lambda r: r.speedup_vs_dense)
+        print(f"\nAttention Best: {best_attn.name} ({best_attn.speedup_vs_dense:.2f}x)")
+        print(f"Attention Worst: {worst_attn.name} ({worst_attn.speedup_vs_dense:.2f}x)")
 
 
 if __name__ == "__main__":

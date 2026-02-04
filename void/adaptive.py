@@ -5,17 +5,23 @@ Automatically selects the optimal tile size for a given sparse matrix to:
 1. Minimize padding overhead (wasted storage from partially-filled tiles)
 2. Maximize block sparsity (fraction of all-zero tiles that can be skipped)
 3. Balance computation efficiency vs memory overhead
+4. Ensure Tensor Core compatibility (tile_k >= 16 required for tl.dot())
 
 The optimal tile size depends on the sparsity pattern:
 - Highly clustered matrices → larger tiles (32x32 or 64x64)
-- Scattered sparse matrices → smaller tiles (8x8 or 16x16)
+- Scattered sparse matrices → smaller tiles (16x16 minimum for TC)
 - Block-structured matrices → match the block structure
+
+Note: Tile sizes < 16 are not compatible with Triton's Tensor Core operations
+(tl.dot requires K >= 16). Use require_tensor_cores=False only if you have
+a fallback scalar kernel.
 """
 
 import numpy as np
 import scipy.sparse as sp
 from typing import Tuple, Optional, List
 from dataclasses import dataclass
+import warnings
 
 
 @dataclass
@@ -155,31 +161,76 @@ def compute_tile_metrics(
     )
 
 
+# Minimum tile size for Tensor Core compatibility (K >= 16 required by tl.dot)
+MIN_TENSOR_CORE_TILE = 16
+
+
+def filter_tensor_core_compatible(
+    candidate_sizes: List[int],
+    require_tensor_cores: bool = True,
+) -> List[int]:
+    """
+    Filter candidate tile sizes to only include Tensor Core compatible sizes.
+
+    Args:
+        candidate_sizes: List of candidate tile sizes
+        require_tensor_cores: If True, filter out sizes < 16
+
+    Returns:
+        Filtered list of tile sizes
+    """
+    if not require_tensor_cores:
+        return candidate_sizes
+    return [s for s in candidate_sizes if s >= MIN_TENSOR_CORE_TILE]
+
+
 def select_adaptive_tile_size(
     matrix: sp.csr_matrix,
     candidate_sizes: Optional[List[int]] = None,
     max_overhead: float = 1.5,
     verbose: bool = False,
+    require_tensor_cores: bool = True,
 ) -> int:
     """
     Automatically select the best tile size for a sparse matrix.
 
     Args:
         matrix: Sparse matrix in CSR format
-        candidate_sizes: List of tile sizes to consider (default: [8, 16, 32, 64])
+        candidate_sizes: List of tile sizes to consider (default: [16, 32, 64])
         max_overhead: Maximum acceptable overhead ratio (default: 1.5 = 50% padding)
         verbose: Print analysis (default: False)
+        require_tensor_cores: If True (default), filter out tile sizes < 16
+            which are incompatible with Triton's Tensor Core operations.
+            Set to False only if you have a fallback scalar kernel.
 
     Returns:
-        Optimal tile size
+        Optimal tile size (>= 16 by default for Tensor Core compatibility)
 
     Algorithm:
-        1. Compute metrics for each candidate tile size
-        2. Filter out sizes with overhead > max_overhead
-        3. Select the size with highest score (block_sparsity / overhead_penalty)
+        1. Filter candidates for Tensor Core compatibility (if required)
+        2. Compute metrics for each candidate tile size
+        3. Filter out sizes with overhead > max_overhead
+        4. Select the size with highest score (block_sparsity / overhead_penalty)
     """
     if candidate_sizes is None:
-        candidate_sizes = [8, 16, 32, 64]
+        # Default sizes are all TC-compatible (>= 16)
+        candidate_sizes = [16, 32, 64]
+
+    # Filter for Tensor Core compatibility
+    original_sizes = candidate_sizes.copy()
+    candidate_sizes = filter_tensor_core_compatible(candidate_sizes, require_tensor_cores)
+
+    if not candidate_sizes:
+        if require_tensor_cores:
+            warnings.warn(
+                f"No Tensor Core compatible tile sizes in {original_sizes}. "
+                f"Minimum tile size for Tensor Cores is {MIN_TENSOR_CORE_TILE}. "
+                f"Using {MIN_TENSOR_CORE_TILE} as default.",
+                UserWarning
+            )
+            candidate_sizes = [MIN_TENSOR_CORE_TILE]
+        else:
+            candidate_sizes = original_sizes
 
     if not sp.isspmatrix_csr(matrix):
         matrix = sp.csr_matrix(matrix)
@@ -288,6 +339,7 @@ def csr_to_void_adaptive(
     dtype = None,
     device: str = 'cpu',
     verbose: bool = False,
+    require_tensor_cores: bool = True,
 ):
     """
     Convert CSR matrix to VOID format with adaptive tile size selection.
@@ -298,13 +350,15 @@ def csr_to_void_adaptive(
     Args:
         matrix: Sparse matrix in CSR format
         target_overhead: Target maximum overhead (default: 1.3 = 30% padding)
-        candidate_sizes: Tile sizes to consider (default: [8, 16, 32, 64])
+        candidate_sizes: Tile sizes to consider (default: [16, 32, 64])
         dtype: Output dtype (default: float32)
         device: Output device (default: 'cpu')
         verbose: Print selection process (default: False)
+        require_tensor_cores: If True (default), ensure tile size >= 16
+            for Tensor Core compatibility with Triton's tl.dot()
 
     Returns:
-        VOIDTensor with automatically selected tile size
+        VOIDTensor with automatically selected tile size (>= 16 by default)
     """
     import torch
     from .format import csr_to_void
@@ -312,12 +366,13 @@ def csr_to_void_adaptive(
     if dtype is None:
         dtype = torch.float32
 
-    # Select optimal tile size
+    # Select optimal tile size (TC-compatible by default)
     tile_size = select_adaptive_tile_size(
         matrix,
         candidate_sizes=candidate_sizes,
         max_overhead=target_overhead,
-        verbose=verbose
+        verbose=verbose,
+        require_tensor_cores=require_tensor_cores,
     )
 
     # Convert using selected tile size
