@@ -1,14 +1,4 @@
-"""
-Kernel Autotuning Infrastructure for VOID
-
-Automatically selects optimal kernel configurations (tile sizes, warp counts, etc.)
-based on GPU architecture and matrix dimensions.
-
-This provides 1.5-3x speedups over fixed configurations by adapting to:
-- Different GPU architectures (V100, A100, RTX 4090, etc.)
-- Different matrix sizes
-- Different sparsity patterns
-"""
+"""Kernel autotuning for tile sizes and warp configurations."""
 
 import torch
 import triton
@@ -18,6 +8,8 @@ import json
 import os
 from pathlib import Path
 from dataclasses import dataclass, asdict
+
+from .ops import get_triton_dtype
 
 
 @dataclass
@@ -206,15 +198,6 @@ def void_spmm_kernel_autotuned(
         order=(1, 0),
     )
     tl.store(c_tile_ptr, acc.to(OUTPUT_DTYPE), boundary_check=(0, 1))
-
-
-def get_triton_dtype(torch_dtype: torch.dtype):
-    """Map PyTorch dtype to Triton dtype."""
-    return {
-        torch.float32: tl.float32,
-        torch.float16: tl.float16,
-        torch.bfloat16: tl.bfloat16,
-    }.get(torch_dtype, tl.float32)
 
 
 def benchmark_config(

@@ -1,14 +1,4 @@
-"""
-Dynamic Kernel Selection for VOID Sparse Operations
-
-Automatically selects the best kernel variant based on:
-- Matrix dimensions and sparsity patterns
-- Workload balance characteristics
-- Data types (FP32, FP16, FP8)
-- GPU architecture
-
-Provides a unified interface that abstracts kernel selection complexity.
-"""
+"""Dynamic kernel selection based on sparsity pattern and workload."""
 
 import torch
 from dataclasses import dataclass

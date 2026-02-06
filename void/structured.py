@@ -1,19 +1,4 @@
-"""
-2:4 Structured Sparsity Support for VOID
-
-NVIDIA Sparse Tensor Cores (Ampere+) support 2:4 structured sparsity:
-- For every 4 consecutive elements, exactly 2 must be zero
-- Hardware achieves ~2x throughput vs dense operations
-- Storage is compressed to 50% + 2-bit indices per 4 elements
-
-This module provides:
-- Conversion from dense tensors to 2:4 structured format
-- Pruning algorithms to create 2:4 patterns
-- Compressed storage format compatible with VOID
-- Triton kernels for structured SpMM
-
-Note: 2:4 structured sparsity requires Ampere (SM80+) or newer GPUs.
-"""
+"""2:4 structured sparsity for NVIDIA Sparse Tensor Cores (Ampere+)."""
 
 import torch
 import triton

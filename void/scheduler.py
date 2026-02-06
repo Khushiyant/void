@@ -1,16 +1,4 @@
-"""
-Hybrid Core Scheduling for VOID Sparse Operations
-
-Implements workload partitioning and scheduling strategies for modern GPUs
-with heterogeneous compute capabilities (e.g., NVIDIA Hopper with tensor cores).
-
-Key features:
-- Workload profiling for memory vs compute intensity
-- Partitioning for hybrid execution (tensor core + CUDA core)
-- Regularity analysis for optimal kernel assignment
-
-Note: Full benefits require Hopper-class GPUs or newer.
-"""
+"""Hybrid scheduling for tensor core and CUDA core workload partitioning."""
 
 import torch
 from dataclasses import dataclass

@@ -1,12 +1,4 @@
-"""
-VOID Sparse Matrix Format
-
-The VOID format stores sparse matrices as a collection of dense tiles with:
-1. Block decomposition: Fixed-size tiles (e.g., 32x32)
-2. Thresholding: Only tiles with non-zeros are stored
-3. Morton ordering: Tiles sorted by Z-curve for spatial locality
-4. Compressed metadata: Block table for tile lookup
-"""
+"""VOIDTensor format: block-sparse matrices with Morton-ordered dense tiles."""
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
@@ -21,12 +13,7 @@ MIN_TENSOR_CORE_TILE = 16
 
 
 def morton_encode(x: int, y: int) -> int:
-    """
-    Encode 2D coordinates into Morton code (Z-order curve).
-
-    Morton codes interleave the bits of x and y coordinates,
-    ensuring that spatially close tiles are also close in memory.
-    """
+    """Encode 2D coordinates into Morton code (Z-order curve)."""
     def spread_bits(v: int) -> int:
         # Spread bits of a 16-bit integer to even positions
         v = (v | (v << 8)) & 0x00FF00FF
@@ -279,12 +266,9 @@ def csr_to_void(
     Returns:
         VOIDTensor in the specified format
     """
-    # Warn about Tensor Core incompatible tile sizes
     if warn_small_tiles and tile_size < MIN_TENSOR_CORE_TILE:
         warnings.warn(
-            f"Tile size {tile_size} is below minimum for Tensor Cores ({MIN_TENSOR_CORE_TILE}). "
-            f"Triton's tl.dot() requires K >= 16. SpMM kernels will fail with this tile size. "
-            f"Consider using tile_size >= 16 for Tensor Core compatibility.",
+            f"tile_size={tile_size} < {MIN_TENSOR_CORE_TILE}, Tensor Cores require K >= 16",
             UserWarning
         )
 

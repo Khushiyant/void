@@ -32,7 +32,7 @@ VOID achieves **3-15x speedups** over cuSPARSE and dense baselines by combining:
 - **Autograd Support** — Full backward pass for training
 - **Stream-K Load Balancing** — Handles power-law row distributions
 
-### SOTA Features
+### Advanced Features
 - **2:4 Structured Sparsity** — NVIDIA Sparse Tensor Core support
 - **INT8/INT4 Quantization** — Per-block quantized inference
 - **Dynamic Sparsity** — Runtime-adaptive patterns (top-k attention)

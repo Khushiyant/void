@@ -1,12 +1,4 @@
-"""
-VOID Autograd Support
-
-Custom autograd functions for training sparse neural networks with VOID format.
-Implements backward passes for:
-- SpMM (Sparse @ Dense -> Dense)
-- SpMV (Sparse @ Vector -> Vector)
-- Sparse Attention
-"""
+"""Autograd functions for SpMM, SpMV, and sparse attention."""
 
 import torch
 import torch.autograd as autograd
@@ -16,16 +8,7 @@ import triton
 import triton.language as tl
 
 from .format import VOIDTensor
-from .ops import void_spmm, void_spmv, compute_optimal_tile_n
-
-
-def get_triton_dtype(torch_dtype: torch.dtype):
-    """Map PyTorch dtype to Triton dtype."""
-    return {
-        torch.float32: tl.float32,
-        torch.float16: tl.float16,
-        torch.bfloat16: tl.bfloat16,
-    }.get(torch_dtype, tl.float32)
+from .ops import void_spmm, void_spmv, compute_optimal_tile_n, get_triton_dtype
 
 
 @triton.jit

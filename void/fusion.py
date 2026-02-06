@@ -1,14 +1,4 @@
-"""
-Operation Fusion Framework for VOID Sparse Operations
-
-Provides fused kernels that combine multiple operations into single GPU passes:
-- SpMM + Activation (GELU, ReLU, SiLU)
-- Sparse MLP (SpMM + activation + SpMM)
-- Sparse attention with fused softmax scaling
-
-Fusion reduces memory bandwidth requirements by keeping intermediate results
-in registers instead of writing to global memory.
-"""
+"""Fused SpMM + activation kernels (GELU, ReLU, SiLU)."""
 
 import torch
 import triton
@@ -47,13 +37,8 @@ class ActivationType(Enum):
 
 @triton.jit
 def _gelu(x):
-    """GELU activation: x * 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))"""
-    # Fast approximation using tanh approximation
-    # tanh(x) ≈ x * (27 + x^2) / (27 + 9*x^2) for small x
-    # For better accuracy, use the polynomial approximation
+    """GELU activation using tanh approximation."""
     inner = 0.7978845608 * (x + 0.044715 * x * x * x)
-    # Approximate tanh using the identity: tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
-    # But simpler: use sigmoid relationship: tanh(x) = 2*sigmoid(2x) - 1
     tanh_approx = 2.0 * tl.sigmoid(2.0 * inner) - 1.0
     return x * 0.5 * (1.0 + tanh_approx)
 

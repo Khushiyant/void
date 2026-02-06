@@ -1,13 +1,4 @@
-"""
-VOID Sparse Attention
-
-FlashAttention-style fused sparse attention kernel using VOID block format.
-Supports common sparse attention patterns:
-- Block-sparse attention (BigBird, Longformer style)
-- Local attention (sliding window)
-- Strided attention (fixed stride patterns)
-- Custom mask patterns
-"""
+"""Sparse attention kernels (local, block-sparse, strided patterns)."""
 
 import torch
 import triton
@@ -17,16 +8,8 @@ from typing import Optional, Tuple, Union, Literal
 from dataclasses import dataclass
 
 from .format import VOIDTensor, morton_encode_batch
+from .ops import get_triton_dtype
 import numpy as np
-
-
-def get_triton_dtype(torch_dtype: torch.dtype):
-    """Map PyTorch dtype to Triton dtype."""
-    return {
-        torch.float32: tl.float32,
-        torch.float16: tl.float16,
-        torch.bfloat16: tl.bfloat16,
-    }.get(torch_dtype, tl.float32)
 
 
 @dataclass

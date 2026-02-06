@@ -1,22 +1,4 @@
-"""
-Multi-GPU Support for VOID Sparse Tensors
-
-Enables distributed computation with VOID sparse matrices across multiple GPUs:
-- Row-wise sharding: each GPU handles a subset of rows
-- Column-wise sharding: each GPU handles a subset of columns
-- Block-wise sharding: distribute blocks across GPUs
-
-Communication patterns:
-- All-gather: collect results from all GPUs (for column sharding)
-- All-reduce: sum partial results (for row sharding)
-- Point-to-point: for pipeline parallelism
-
-Requirements:
-- PyTorch distributed (torch.distributed)
-- NCCL backend for best performance on NVIDIA GPUs
-
-Note: Initialize distributed process group before using these functions.
-"""
+"""Multi-GPU sharding and distributed SpMM for VOID tensors."""
 
 import torch
 import torch.distributed as dist

@@ -1,17 +1,4 @@
-"""
-Data-Affinity Block Reordering for VOID Sparse Matrices
-
-Implements block reordering strategies inspired by Acc-SpMM for improved
-cache locality and memory access patterns.
-
-Key strategies:
-- Morton (Z-order): Default VOID ordering for 2D spatial locality
-- Row-major: Simple row-major ordering
-- Affinity: Data-affinity based reordering (Acc-SpMM style)
-- Hilbert: Hilbert curve for better cache locality than Morton
-
-Reference: Acc-SpMM paper for affinity-based reordering concepts.
-"""
+"""Block reordering strategies for cache locality (Morton, Hilbert, affinity-based)."""
 
 import torch
 import numpy as np
@@ -67,31 +54,7 @@ class ReorderingResult:
     locality_score: float = 0.0
 
 
-# =============================================================================
-# Morton (Z-order) Encoding - Already in format.py but included for completeness
-# =============================================================================
-
-def morton_encode(x: int, y: int) -> int:
-    """Encode 2D coordinates into Morton code (Z-order curve)."""
-    def spread_bits(v: int) -> int:
-        v = (v | (v << 8)) & 0x00FF00FF
-        v = (v | (v << 4)) & 0x0F0F0F0F
-        v = (v | (v << 2)) & 0x33333333
-        v = (v | (v << 1)) & 0x55555555
-        return v
-    return spread_bits(x) | (spread_bits(y) << 1)
-
-
-def morton_encode_batch(rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
-    """Vectorized Morton encoding."""
-    def spread_bits_vec(v: np.ndarray) -> np.ndarray:
-        v = v.astype(np.uint64)
-        v = (v | (v << 8)) & 0x00FF00FF
-        v = (v | (v << 4)) & 0x0F0F0F0F
-        v = (v | (v << 2)) & 0x33333333
-        v = (v | (v << 1)) & 0x55555555
-        return v
-    return spread_bits_vec(rows) | (spread_bits_vec(cols) << 1)
+from .format import morton_encode, morton_encode_batch
 
 
 # =============================================================================

@@ -1,15 +1,4 @@
-"""
-FP8 Support for VOID Sparse Matrix Operations
-
-Implements FP8 quantization and scaling following FlashAttention-3 patterns.
-Supports both E4M3 (higher precision) and E5M2 (higher dynamic range) formats.
-
-Key features:
-- Per-tensor and per-block scaling for numerical stability
-- AMAX history tracking for dynamic scaling
-- Fused quantize/dequantize operations
-- Integration with VOID sparse format
-"""
+"""FP8 (E4M3/E5M2) quantization for VOID sparse matrices."""
 
 import torch
 import triton

@@ -1,21 +1,4 @@
-"""
-Dynamic Sparsity Support for VOID
-
-Enables runtime-adaptive sparse patterns that can change during inference/training:
-- Top-k attention: dynamically select most important key-value pairs
-- Threshold-based: prune values below dynamic threshold
-- Pattern-based: update sparsity pattern from learned masks
-
-Key features:
-- Pre-allocated buffers for efficient pattern updates
-- Batch-aware dynamic patterns (different patterns per batch element)
-- Integration with attention mechanisms for dynamic sparse attention
-
-Use cases:
-- Adaptive inference where sparsity varies by input
-- Progressive pruning during training
-- Dynamic routing in mixture-of-experts
-"""
+"""Runtime-adaptive sparsity patterns (top-k, threshold-based, learned masks)."""
 
 import torch
 import triton

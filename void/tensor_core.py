@@ -1,19 +1,4 @@
-"""
-Tensor Core Configuration for VOID Sparse Operations
-
-Provides explicit configuration for optimal Tensor Core utilization on NVIDIA GPUs.
-Supports multiple precision modes and alignment checks.
-
-Key features:
-- TensorCoreConfig dataclass for precision modes (TF32, FP16, BF16, FP8)
-- Alignment validation for Tensor Core operations
-- Optimal tile size computation
-- GPU capability detection
-
-Note: Tensor Cores require specific dimension alignment:
-- Minimum K dimension: 16 (for tl.dot operations)
-- Optimal alignment: multiples of 16 for FP32, 8 for FP16
-"""
+"""Tensor Core configuration and alignment utilities."""
 
 from dataclasses import dataclass, field
 from enum import Enum

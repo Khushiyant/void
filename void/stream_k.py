@@ -1,17 +1,4 @@
-"""
-Stream-K Load Balancing for VOID SpMM
-
-Handles power-law row distributions where some rows have many more
-non-zero blocks than others. Standard row-parallel mapping causes
-severe load imbalance.
-
-Stream-K approach:
-1. Estimate total work (sum of blocks across all rows)
-2. Divide work evenly among thread blocks
-3. Each thread block processes a "budget" of work
-4. Heavy rows are split across multiple thread blocks
-5. Partial results combined via atomic operations
-"""
+"""Stream-K load balancing for SpMM with power-law row distributions."""
 
 import torch
 import triton
@@ -20,15 +7,7 @@ from typing import Optional, Tuple
 from dataclasses import dataclass
 
 from .format import VOIDTensor
-
-
-def get_triton_dtype(torch_dtype: torch.dtype):
-    """Map PyTorch dtype to Triton dtype."""
-    return {
-        torch.float32: tl.float32,
-        torch.float16: tl.float16,
-        torch.bfloat16: tl.bfloat16,
-    }.get(torch_dtype, tl.float32)
+from .ops import get_triton_dtype
 
 
 @dataclass

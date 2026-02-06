@@ -1,25 +1,5 @@
 """
-VOID (FlashSparse) - Cache-aware block tiling for sparse matrix operations.
-
-This package provides:
-- VOIDTensor: Efficient sparse matrix format using dense tiles with Morton ordering
-- void_spmm/void_spmv: Triton kernels for sparse-dense multiplication
-- sparse_attention: FlashAttention-style sparse attention
-- VOIDSpMM/SparseLinear: Autograd-enabled modules for training
-- void_spmm_stream_k: Load-balanced SpMM for power-law distributions
-
-2025/2026 SOTA Features:
-- FP8 support (FlashAttention-3 style)
-- Data-affinity reordering (Acc-SpMM style)
-- Enhanced pipelining with 3-5 stages
-- Operation fusion framework (SpMM + activation)
-- Dynamic kernel selection
-- Hybrid core scheduling (Hopper+)
-- Tensor Core configuration and alignment
-- 2:4 Structured sparsity (NVIDIA Sparse Tensor Cores)
-- INT8/INT4 quantization support
-- Dynamic sparsity patterns
-- Multi-GPU distributed computation
+VOID - Block-sparse matrix operations with Morton ordering and Triton kernels.
 """
 
 from .format import VOIDTensor, csr_to_void, dense_to_void
@@ -45,7 +25,6 @@ from .attention import (
     create_block_sparse_mask,
 )
 
-# Tensor Core configuration (2026 SOTA)
 from .tensor_core import (
     TCPrecision,
     TensorCoreConfig,
@@ -57,7 +36,6 @@ from .tensor_core import (
     get_triton_tc_config,
 )
 
-# 2:4 Structured sparsity (2026 SOTA)
 from .structured import (
     PruneMethod,
     StructuredSparsityMetadata,
@@ -73,7 +51,6 @@ from .structured import (
     get_structured_sparsity_info,
 )
 
-# INT8/INT4 quantization (2026 SOTA)
 from .int_quant import (
     IntFormat,
     ScaleMode,
@@ -88,7 +65,6 @@ from .int_quant import (
     get_quantization_error,
 )
 
-# Dynamic sparsity (2026 SOTA)
 from .dynamic import (
     UpdateStrategy,
     DynamicVOIDTensor,
@@ -103,7 +79,6 @@ from .dynamic import (
     progressive_sparsification,
 )
 
-# Multi-GPU distributed (2026 SOTA)
 from .distributed import (
     ShardingStrategy,
     DistributedVOIDTensor,
@@ -132,7 +107,6 @@ from .stream_k import (
     analyze_workload_balance,
 )
 
-# FP8 support (2025 SOTA)
 from .fp8 import (
     FP8Format,
     FP8Config,
@@ -144,7 +118,6 @@ from .fp8 import (
     void_tensor_to_fp8,
 )
 
-# Block reordering (2025 SOTA)
 from .reorder import (
     OrderingStrategy,
     AffinityInfo,
@@ -157,7 +130,6 @@ from .reorder import (
     reorder_to_hilbert,
 )
 
-# Operation fusion (2025 SOTA)
 from .fusion import (
     FusedOpType,
     ActivationType,
@@ -172,7 +144,6 @@ from .fusion import (
     create_sparse_mlp,
 )
 
-# Dynamic dispatch (2025 SOTA)
 from .dispatch import (
     KernelVariant,
     DispatchDecision,
@@ -183,7 +154,6 @@ from .dispatch import (
     KernelDispatcher,
 )
 
-# Hybrid scheduling (2025 SOTA)
 from .scheduler import (
     CoreType,
     SchedulingStrategy,
@@ -234,7 +204,7 @@ __all__ = [
     "select_adaptive_tile_size",
     "analyze_sparsity_pattern",
     "TileSizeMetrics",
-    # Tensor Core configuration (2026 SOTA)
+    # Tensor Core
     "TCPrecision",
     "TensorCoreConfig",
     "TCAlignmentResult",
@@ -243,7 +213,7 @@ __all__ = [
     "tc_should_use_tensor_cores",
     "get_gpu_tensor_core_info",
     "get_triton_tc_config",
-    # 2:4 Structured sparsity (2026 SOTA)
+    # Structured sparsity
     "PruneMethod",
     "StructuredSparsityMetadata",
     "VOIDStructuredTensor",
@@ -256,7 +226,7 @@ __all__ = [
     "void_to_structured",
     "structured_to_dense",
     "get_structured_sparsity_info",
-    # INT8/INT4 quantization (2026 SOTA)
+    # Quantization
     "IntFormat",
     "ScaleMode",
     "IntQuantConfig",
@@ -268,7 +238,7 @@ __all__ = [
     "dequantize_void_tensor",
     "void_spmm_int8",
     "get_quantization_error",
-    # Dynamic sparsity (2026 SOTA)
+    # Dynamic sparsity
     "UpdateStrategy",
     "DynamicVOIDTensor",
     "DynamicAttentionConfig",
@@ -280,7 +250,7 @@ __all__ = [
     "compute_topk_attention_mask",
     "dynamic_topk_attention",
     "progressive_sparsification",
-    # Multi-GPU distributed (2026 SOTA)
+    # Distributed
     "ShardingStrategy",
     "DistributedVOIDTensor",
     "PipelineStage",
@@ -291,7 +261,7 @@ __all__ = [
     "distributed_void_spmm",
     "gather_void_tensor",
     "broadcast_void_tensor",
-    # FP8 support (2025 SOTA)
+    # FP8
     "FP8Format",
     "FP8Config",
     "FP8ScalingInfo",
@@ -300,7 +270,7 @@ __all__ = [
     "dequantize_from_fp8",
     "void_spmm_fp8",
     "void_tensor_to_fp8",
-    # Block reordering (2025 SOTA)
+    # Reordering
     "OrderingStrategy",
     "AffinityInfo",
     "ReorderingResult",
@@ -310,7 +280,7 @@ __all__ = [
     "reorder_for_spmm",
     "reorder_to_row_major",
     "reorder_to_hilbert",
-    # Operation fusion (2025 SOTA)
+    # Fusion
     "FusedOpType",
     "ActivationType",
     "FusedSparseOp",
@@ -322,7 +292,7 @@ __all__ = [
     "create_fused_spmm_gelu",
     "create_fused_spmm_relu",
     "create_sparse_mlp",
-    # Dynamic dispatch (2025 SOTA)
+    # Dispatch
     "KernelVariant",
     "DispatchDecision",
     "WorkloadCharacteristics",
@@ -330,7 +300,7 @@ __all__ = [
     "get_recommended_kernel",
     "analyze_dispatch_decision",
     "KernelDispatcher",
-    # Hybrid scheduling (2025 SOTA)
+    # Scheduling
     "CoreType",
     "SchedulingStrategy",
     "WorkloadProfile",
@@ -339,4 +309,4 @@ __all__ = [
     "get_execution_plan",
 ]
 
-__version__ = "0.3.0"  # 2026 SOTA release with structured sparsity, INT8, dynamic, and distributed
+__version__ = "0.3.0"

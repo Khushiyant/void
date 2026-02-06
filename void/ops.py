@@ -1,10 +1,4 @@
-"""
-VOID Triton Kernels for Sparse Matrix Operations
-
-Implements:
-- void_spmm: Sparse-Dense Matrix Multiplication (A @ B where A is VOID sparse)
-- void_spmv: Sparse-Dense Matrix-Vector Multiplication (A @ x)
-"""
+"""Triton SpMM and SpMV kernels for VOID sparse matrices."""
 
 import torch
 import triton
@@ -35,18 +29,7 @@ MIN_TENSOR_CORE_K = 16
 
 
 def compute_optimal_tile_n(N: int) -> int:
-    """
-    Compute optimal TILE_N for memory coalescing and Tensor Core efficiency.
-
-    This function ensures consistent TILE_N selection across all kernels
-    (SpMM, fused ops, backward passes) for optimal performance.
-
-    Args:
-        N: Output column dimension
-
-    Returns:
-        Optimal TILE_N (16, 32, 64, or 128)
-    """
+    """Select TILE_N based on output dimension N."""
     if N >= 128:
         return 128
     elif N >= 64:

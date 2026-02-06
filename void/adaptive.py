@@ -1,21 +1,4 @@
-"""
-Adaptive Tile Size Selection for VOID
-
-Automatically selects the optimal tile size for a given sparse matrix to:
-1. Minimize padding overhead (wasted storage from partially-filled tiles)
-2. Maximize block sparsity (fraction of all-zero tiles that can be skipped)
-3. Balance computation efficiency vs memory overhead
-4. Ensure Tensor Core compatibility (tile_k >= 16 required for tl.dot())
-
-The optimal tile size depends on the sparsity pattern:
-- Highly clustered matrices → larger tiles (32x32 or 64x64)
-- Scattered sparse matrices → smaller tiles (16x16 minimum for TC)
-- Block-structured matrices → match the block structure
-
-Note: Tile sizes < 16 are not compatible with Triton's Tensor Core operations
-(tl.dot requires K >= 16). Use require_tensor_cores=False only if you have
-a fallback scalar kernel.
-"""
+"""Adaptive tile size selection based on sparsity pattern analysis."""
 
 import numpy as np
 import scipy.sparse as sp

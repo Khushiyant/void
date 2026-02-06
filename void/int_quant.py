@@ -1,20 +1,4 @@
-"""
-INT8/INT4 Quantization Support for VOID
-
-Provides integer quantization for sparse matrices to enable:
-- 2-4x memory reduction (FP32 -> INT8/INT4)
-- Faster computation on INT8 Tensor Cores (Turing+)
-- Lower memory bandwidth requirements
-
-Quantization modes:
-- Symmetric: scale only, zero_point = 0
-- Asymmetric: scale + zero_point for better accuracy
-- Per-tensor: single scale for entire tensor
-- Per-channel: separate scale per output channel (better accuracy)
-- Per-block: separate scale per VOID block (best accuracy for sparse)
-
-Note: INT8 Tensor Cores available on Turing (SM75+) and newer.
-"""
+"""INT8/INT4 quantization for VOID sparse tensors."""
 
 import torch
 import triton

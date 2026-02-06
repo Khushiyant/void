@@ -1,15 +1,4 @@
-"""
-Triton Backward Kernels for Sparse Attention
-
-Implements efficient fused backward pass for sparse attention to replace
-the slow Python loop implementation in autograd.py.
-
-Based on FlashAttention-2 backward algorithm adapted for sparse block patterns.
-
-Key fix (2025): Two-phase reduction to eliminate race conditions in dV/dK accumulation.
-- Phase 1: Each query block writes partial dV/dK to workspace (no race)
-- Phase 2: Reduction kernel sums partials to final dV/dK
-"""
+"""Fused backward kernels for sparse attention with two-phase dV/dK reduction."""
 
 import torch
 import triton
@@ -17,14 +6,7 @@ import triton.language as tl
 import math
 from typing import Tuple
 
-
-def get_triton_dtype(torch_dtype: torch.dtype):
-    """Map PyTorch dtype to Triton dtype."""
-    return {
-        torch.float32: tl.float32,
-        torch.float16: tl.float16,
-        torch.bfloat16: tl.bfloat16,
-    }.get(torch_dtype, tl.float32)
+from .ops import get_triton_dtype
 
 
 @triton.jit
